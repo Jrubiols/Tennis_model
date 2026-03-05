@@ -426,12 +426,8 @@ def analizar_partido(pa_nombre, pb_nombre, oa, ob, ranking_data, cfg):
 # ============================================================
 def formatear_partido(r, cfg):
     if r['decision'] == 'ERROR':
-        return (f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-"
-                f"❌ *{r['pa']} vs {r['pb']}*
-"
-                f"{r['motivo']}
-")
+        sep = "-" * 28
+        return f"{sep}\n❌ *{r['pa']} vs {r['pb']}*\n{r['motivo']}\n" 
 
     if r['decision'] == 'PASS' and 'NEV' in r['motivo']:
         return (f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
