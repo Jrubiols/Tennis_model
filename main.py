@@ -1,22 +1,29 @@
 """
-TENNIS BOT TELEGRAM v2.0
-Novedades vs v1:
-  1. Tracking ROI
-  2. Pinnacle como referencia de cuotas
-  3. Split dia/noche por hora del partido
+TENNIS BOT TELEGRAM v3.0
+Novedades vs v2:
+  1. Centro de control por torneos — /torneo para activar contexto
+  2. Clima automatico via OpenWeatherMap — temperatura, viento, humedad
+  3. Perfiles de jugadores — estilo de juego × condiciones × superficie
+  4. Score ambiental — penaliza/bonifica segun si el jugador encaja
 
-COMANDOS:
-  /start               — bienvenida
+COMANDOS TORNEO (centro de control):
+  /torneo              — ver torneo activo y condiciones actuales
+  /settorneo NAME      — activar torneo por nombre (ej: /settorneo Indian Wells)
+  /torneos             — lista todos los torneos disponibles
+
+COMANDOS MODELO:
   /setkey KEY          — cambia API key api-tennis.com
   /surface Hard        — cambia superficie (Hard/Clay/Grass)
   /nev 15              — cambia gap minimo NEV
   /config              — ver configuracion actual
+
+COMANDOS ROI:
   /gano Tseng          — registra victoria
   /perdio Tseng        — registra derrota
   /roi                 — ver historial y ROI acumulado
   /limpiar             — borrar historial ROI
 
-FORMATO PARTIDOS:
+FORMATO PARTIDOS (sin hora si hay torneo activo):
   Fonseca vs Collignon 1.75 2.05
   Tseng vs Baez 3.40 1.35 21:00
 """
@@ -40,11 +47,226 @@ except ImportError:
 # ============================================================
 # CONFIG
 # ============================================================
-BOT_TOKEN   = "8767038110:AAHmpQjZIgIzy8sw1aXeK3rinb5Iglv8VVM"
-CONFIG_FILE = "bot_config.json"
-ROI_FILE    = "roi_tracking.json"
-CACHE_DIR   = "cache_bot"
-SEP         = "-" * 28
+BOT_TOKEN    = "8767038110:AAHmpQjZIgIzy8sw1aXeK3rinb5Iglv8VVM"
+CONFIG_FILE  = "bot_config.json"
+ROI_FILE     = "roi_tracking.json"
+CACHE_DIR    = "cache_bot"
+SEP          = "-" * 28
+WEATHER_KEY  = "2222262956d5a76bfe14d48deeb3a05b"
+PROFILES_FILE = "player_profiles.json"
+
+# ── Base de torneos ATP ───────────────────────────────────────
+TOURNAMENTS_DB = {
+    "indian wells": {
+        "nombre":     "Indian Wells (BNP Paribas Open)",
+        "ciudad":     "Indian Wells,US",
+        "superficie": "Hard",
+        "timezone":   -7,
+        "cpi":        31.0,
+        "notas":      "Pista muy lenta a pesar del hard. Split dia/noche enorme. 2026 juega mas rapido de lo esperado.",
+    },
+    "miami": {
+        "nombre":     "Miami Open",
+        "ciudad":     "Miami,US",
+        "superficie": "Hard",
+        "timezone":   -4,
+        "cpi":        38.0,
+        "notas":      "Hard rapido. Humedad alta. Viento variable. Favorece jugadores atleticos.",
+    },
+    "madrid": {
+        "nombre":     "Mutua Madrid Open",
+        "ciudad":     "Madrid,ES",
+        "superficie": "Clay",
+        "timezone":   2,
+        "cpi":        42.0,
+        "notas":      "Altitud 650m. Pelota vuela mas rapido de lo normal en arcilla. Favorece agresivos.",
+    },
+    "roland garros": {
+        "nombre":     "Roland Garros",
+        "ciudad":     "Paris,FR",
+        "superficie": "Clay",
+        "timezone":   2,
+        "cpi":        27.0,
+        "notas":      "Arcilla mas lenta del tour. Lluvia frecuente. Grinders dominan.",
+    },
+    "wimbledon": {
+        "nombre":     "Wimbledon",
+        "ciudad":     "London,GB",
+        "superficie": "Grass",
+        "timezone":   1,
+        "cpi":        75.0,
+        "notas":      "Hierba rapida. Favorece servidores y agresivos. Primeras rondas muy rapidas.",
+    },
+    "us open": {
+        "nombre":     "US Open",
+        "ciudad":     "New York,US",
+        "superficie": "Hard",
+        "timezone":   -4,
+        "cpi":        55.0,
+        "notas":      "Hard rapido Laykold. Sesiones nocturnas con techo cerrado son mas lentas.",
+    },
+    "monte carlo": {
+        "nombre":     "Monte Carlo Masters",
+        "ciudad":     "Monaco,MC",
+        "superficie": "Clay",
+        "timezone":   2,
+        "cpi":        28.0,
+        "notas":      "Arcilla lenta junto al mar. Humedad alta. Grinders y arcilleros dominan.",
+    },
+    "rome": {
+        "nombre":     "Internazionali BNL d'Italia",
+        "ciudad":     "Rome,IT",
+        "superficie": "Clay",
+        "timezone":   2,
+        "cpi":        30.0,
+        "notas":      "Arcilla lenta. Tarde puede haber viento. Especialistas de arcilla tienen ventaja.",
+    },
+    "canada": {
+        "nombre":     "Canadian Open",
+        "ciudad":     "Montreal,CA",
+        "superficie": "Hard",
+        "timezone":   -4,
+        "cpi":        52.0,
+        "notas":      "Hard rapido. Alternancia Montreal/Toronto. Condiciones variables.",
+    },
+    "cincinnati": {
+        "nombre":     "Western & Southern Open",
+        "ciudad":     "Cincinnati,US",
+        "superficie": "Hard",
+        "timezone":   -4,
+        "cpi":        50.0,
+        "notas":      "Hard medio. Calor y humedad en agosto. Ultima semana antes del US Open.",
+    },
+    "shanghai": {
+        "nombre":     "Shanghai Masters",
+        "ciudad":     "Shanghai,CN",
+        "superficie": "Hard",
+        "timezone":   8,
+        "cpi":        53.0,
+        "notas":      "Hard rapido. Contaminacion puede afectar condicion fisica. Temperatura fresca en octubre.",
+    },
+    "paris": {
+        "nombre":     "Rolex Paris Masters",
+        "ciudad":     "Paris,FR",
+        "superficie": "Hard",
+        "timezone":   1,
+        "cpi":        58.0,
+        "notas":      "Indoor muy rapido. Favorece servidores enormemente. Ultimo Masters del año.",
+    },
+    "australia": {
+        "nombre":     "Australian Open",
+        "ciudad":     "Melbourne,AU",
+        "superficie": "Hard",
+        "timezone":   11,
+        "cpi":        56.0,
+        "notas":      "Hard rapido Plexicushion. Calor extremo posible. Favorece agresivos y servidores.",
+    },
+    "acapulco": {
+        "nombre":     "Abierto Mexicano Telcel",
+        "ciudad":     "Acapulco,MX",
+        "superficie": "Hard",
+        "timezone":   -6,
+        "cpi":        32.0,
+        "notas":      "Hard muy lento. Humedad alta. Noche muy lenta. Arcilleros prosperan.",
+    },
+    "dubai": {
+        "nombre":     "Dubai Duty Free Championships",
+        "ciudad":     "Dubai,AE",
+        "superficie": "Hard",
+        "timezone":   4,
+        "cpi":        58.0,
+        "notas":      "Hard rapido. Calor seco. Pelota vuela rapido. Favorece agresivos.",
+    },
+    "doha": {
+        "nombre":     "Qatar ExxonMobil Open",
+        "ciudad":     "Doha,QA",
+        "superficie": "Hard",
+        "timezone":   3,
+        "cpi":        42.0,
+        "notas":      "Hard lento. Viento variable importante factor. Condiciones cambian entre dia y noche.",
+    },
+    "barcelona": {
+        "nombre":     "Barcelona Open Banc Sabadell",
+        "ciudad":     "Barcelona,ES",
+        "superficie": "Clay",
+        "timezone":   2,
+        "cpi":        33.0,
+        "notas":      "Arcilla lenta. Calor primaveral. Especialistas de arcilla tienen gran ventaja.",
+    },
+    "halle": {
+        "nombre":     "Terra Wortmann Open",
+        "ciudad":     "Halle,DE",
+        "superficie": "Grass",
+        "timezone":   2,
+        "cpi":        72.0,
+        "notas":      "Hierba muy rapida. Primera semana hierba del año. Servidores dominan.",
+    },
+    "queens": {
+        "nombre":     "Cinch Championships",
+        "ciudad":     "London,GB",
+        "superficie": "Grass",
+        "timezone":   1,
+        "cpi":        70.0,
+        "notas":      "Hierba rapida. Lluvia frecuente. Servidores y agresivos tienen ventaja.",
+    },
+    "vienna": {
+        "nombre":     "Erste Bank Open",
+        "ciudad":     "Vienna,AT",
+        "superficie": "Hard",
+        "timezone":   1,
+        "cpi":        60.0,
+        "notas":      "Indoor rapido. Favorece servidores. Ultimo indoor antes de Paris.",
+    },
+    "santiago": {
+        "nombre":     "Chile Open",
+        "ciudad":     "Santiago,CL",
+        "superficie": "Clay",
+        "timezone":   -3,
+        "cpi":        45.0,
+        "notas":      "Altitud 520m. Arcilla mas rapida de lo normal. Favorece agresivos sobre arcilla.",
+    },
+    "rio": {
+        "nombre":     "Rio Open",
+        "ciudad":     "Rio de Janeiro,BR",
+        "superficie": "Clay",
+        "timezone":   -3,
+        "cpi":        28.0,
+        "notas":      "Arcilla muy lenta. Humedad extrema. Calor. Grinders dominan. Favoritos pierden frecuentemente.",
+    },
+}
+
+# ── Perfiles jugadores ────────────────────────────────────────
+_player_profiles = {}
+
+def load_profiles():
+    global _player_profiles
+    if os.path.exists(PROFILES_FILE):
+        with open(PROFILES_FILE, "r", encoding="utf-8") as f:
+            _player_profiles = json.load(f)
+
+def get_profile(nombre):
+    nombre_lower = nombre.lower()
+    # Match exacto
+    for k, v in _player_profiles.items():
+        if k.lower() == nombre_lower:
+            return v
+    # Match por apellido
+    apellido = nombre_lower.split()[-1]
+    for k, v in _player_profiles.items():
+        if apellido in k.lower():
+            return v
+    return None
+
+# Impacto estilo × condiciones
+# (temp_alta, viento_alto, humedad_alta, superficie_rapida)
+STYLE_CONDITIONS = {
+    "BIG_SERVER":     {"temp_alta": +0.5, "viento_alto": -0.5, "humedad_alta": -0.3, "rapida": +0.5, "lenta": -0.5},
+    "AGGRESSIVE":     {"temp_alta": +0.5, "viento_alto": -0.3, "humedad_alta": -0.2, "rapida": +0.5, "lenta": -0.3},
+    "ALLCOURT":       {"temp_alta":  0.0, "viento_alto":  0.0, "humedad_alta":  0.0, "rapida":  0.0, "lenta":  0.0},
+    "SOLID":          {"temp_alta": -0.2, "viento_alto": +0.3, "humedad_alta": +0.2, "rapida": -0.2, "lenta": +0.2},
+    "COUNTERPUNCHER": {"temp_alta": -0.3, "viento_alto": +0.3, "humedad_alta": +0.3, "rapida": -0.5, "lenta": +0.5},
+    "SERVE_VOLLEY":   {"temp_alta": +0.3, "viento_alto": -0.5, "humedad_alta": -0.3, "rapida": +0.5, "lenta": -0.5},
+}
 
 DEFAULT_CONFIG = {
     "api_key":             "794558d47064c313aaf7af272503014d578ac2629612cb6e49f6057cab5dcce4",
@@ -60,6 +282,7 @@ DEFAULT_CONFIG = {
     "min_surface_matches": 5,
     "cache_hours":         12,
     "default_stake":       10,
+    "torneo_activo":       "indian wells",
 }
 
 def load_config():
@@ -181,8 +404,108 @@ def get_pinnacle_odds(player_a, player_b):
     return None
 
 # ============================================================
-# SPLIT DIA/NOCHE
+# CLIMA — OpenWeatherMap
 # ============================================================
+def get_weather(ciudad):
+    ckey = "weather_" + ciudad.lower().replace(",", "_").replace(" ", "_")
+    cached = cache_get(ckey, 1)  # cache 1 hora
+    if cached:
+        return cached
+    try:
+        url = "https://api.openweathermap.org/data/2.5/weather"
+        r   = requests.get(url, params={
+            "q": ciudad, "appid": WEATHER_KEY, "units": "metric"
+        }, timeout=8)
+        if r.status_code == 200:
+            d    = r.json()
+            data = {
+                "temp":     round(d["main"]["temp"], 1),
+                "humedad":  d["main"]["humidity"],
+                "viento":   round(d["wind"]["speed"] * 3.6, 1),  # m/s a km/h
+                "desc":     d["weather"][0]["description"],
+                "ciudad":   ciudad,
+            }
+            cache_set(ckey, data)
+            return data
+    except Exception:
+        pass
+    return None
+
+def evaluar_condiciones(weather, torneo_info):
+    """
+    Devuelve dict con flags de condicion para cruzar con perfiles.
+    """
+    if not weather:
+        return None
+    cpi = torneo_info.get("cpi", 45) if torneo_info else 45
+    return {
+        "temp":       weather["temp"],
+        "humedad":    weather["humedad"],
+        "viento":     weather["viento"],
+        "temp_alta":  weather["temp"] > 28,
+        "temp_baja":  weather["temp"] < 18,
+        "viento_alto": weather["viento"] > 20,
+        "humedad_alta": weather["humedad"] > 65,
+        "rapida":     cpi > 50,
+        "lenta":      cpi < 35,
+        "desc":       weather["desc"],
+    }
+
+def score_perfil_condiciones(nombre, condiciones):
+    """
+    Calcula bonus/penalizacion segun estilo del jugador × condiciones actuales.
+    Devuelve (delta_score, lineas_info)
+    """
+    if not condiciones:
+        return 0, []
+    perfil = get_profile(nombre)
+    if not perfil:
+        return 0, [("PERFIL    No hay datos de estilo para " + nombre)]
+
+    estilo = perfil["estilo"]
+    sup_fav = perfil["superficie_fav"]
+    efectos = STYLE_CONDITIONS.get(estilo, {})
+    delta   = 0.0
+    lineas  = []
+
+    # Temperatura
+    if condiciones["temp_alta"] and efectos.get("temp_alta", 0) != 0:
+        d = efectos["temp_alta"]
+        delta += d
+        lineas.append("PERFIL    " + nombre + " (" + estilo + ") " + ("+" if d > 0 else "") + str(d) + " por calor (" + str(condiciones["temp"]) + "C)")
+    elif condiciones["temp_baja"] and efectos.get("temp_alta", 0) != 0:
+        d = -efectos["temp_alta"]
+        delta += d
+        lineas.append("PERFIL    " + nombre + " (" + estilo + ") " + ("+" if d > 0 else "") + str(d) + " por frio (" + str(condiciones["temp"]) + "C)")
+
+    # Viento
+    if condiciones["viento_alto"] and efectos.get("viento_alto", 0) != 0:
+        d = efectos["viento_alto"]
+        delta += d
+        lineas.append("PERFIL    " + nombre + " (" + estilo + ") " + ("+" if d > 0 else "") + str(d) + " por viento (" + str(condiciones["viento"]) + "km/h)")
+
+    # Humedad
+    if condiciones["humedad_alta"] and efectos.get("humedad_alta", 0) != 0:
+        d = efectos["humedad_alta"]
+        delta += d
+        lineas.append("PERFIL    " + nombre + " (" + estilo + ") " + ("+" if d > 0 else "") + str(d) + " por humedad (" + str(condiciones["humedad"]) + "%)")
+
+    # Velocidad pista
+    if condiciones["rapida"] and efectos.get("rapida", 0) != 0:
+        d = efectos["rapida"]
+        delta += d
+        lineas.append("PERFIL    " + nombre + " (" + estilo + ") " + ("+" if d > 0 else "") + str(d) + " por pista rapida")
+    elif condiciones["lenta"] and efectos.get("lenta", 0) != 0:
+        d = efectos["lenta"]
+        delta += d
+        lineas.append("PERFIL    " + nombre + " (" + estilo + ") " + ("+" if d > 0 else "") + str(d) + " por pista lenta")
+
+    if not lineas:
+        lineas.append("PERFIL    " + nombre + " (" + estilo + ") — condiciones neutras")
+
+    return round(delta, 1), lineas
+
+
 def analizar_hora(hora_str):
     if not hora_str:
         return None
@@ -384,7 +707,7 @@ def analizar_jugador(nombre, ranking_data, cfg):
 # ============================================================
 # ANALISIS PARTIDO
 # ============================================================
-def analizar_partido(pa_nombre, pb_nombre, oa, ob, ranking_data, cfg, hora=None):
+def analizar_partido(pa_nombre, pb_nombre, oa, ob, ranking_data, cfg, hora=None, condiciones=None):
     da = analizar_jugador(pa_nombre, ranking_data, cfg)
     db = analizar_jugador(pb_nombre, ranking_data, cfg)
     ra, rb = da["ranking"], db["ranking"]
@@ -544,8 +867,20 @@ def analizar_partido(pa_nombre, pb_nombre, oa, ob, ranking_data, cfg, hora=None)
     if hora_info:
         lines.append("SESION    " + hora_info["sesion"] + " — " + hora_info["desc"])
 
-    # ── Score final con penalizaciones ──────────────────────────
-    score = round(max(score - penalizacion, 0), 1)
+    # ── Perfil jugador × condiciones ambientales ─────────────────
+    perfil_delta = 0.0
+    if condiciones:
+        delta_pick, lineas_pick = score_perfil_condiciones(pick, condiciones)
+        delta_opp,  lineas_opp  = score_perfil_condiciones(
+            pa_nombre if pick == pb_nombre else pb_nombre, condiciones
+        )
+        perfil_delta = delta_pick - delta_opp  # pick gana/pierde vs oponente
+        lines.extend(lineas_pick)
+        # Clima resumen
+        lines.append("CLIMA     " + str(condiciones["temp"]) + "C  viento " + str(condiciones["viento"]) + "km/h  humedad " + str(condiciones["humedad"]) + "%  — " + condiciones["desc"])
+
+    # ── Score final con penalizaciones + perfil ──────────────────
+    score = round(max(score - penalizacion + perfil_delta, 0), 1)
 
     # ── Decision ────────────────────────────────────────────────
     if val < cfg["min_value_pct"]:
@@ -681,24 +1016,100 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cfg      = load_config()
     roi_data = load_roi()
     pending  = len(roi_data["pending"])
+    torneo_key  = cfg.get("torneo_activo", "")
+    torneo_info = TOURNAMENTS_DB.get(torneo_key)
+    torneo_txt  = "*" + torneo_info["nombre"] + "*" if torneo_info else "Ninguno — usa /settorneo"
     txt_pend = "\nPicks pendientes: *" + str(pending) + "*" if pending else ""
-    msg = ("TENNIS MODEL BOT v2.0\n\n"
+    msg = ("TENNIS MODEL BOT v3.0\n\n"
+           "Torneo activo: " + torneo_txt + "\n\n"
            "Envia los partidos:\n"
            "`Fonseca vs Collignon 1.75 2.05`\n"
            "`Tseng vs Baez 3.40 1.35 21:00`\n\n"
-           "*Comandos:*\n"
+           "*Torneos:*\n"
+           "`/torneo` — ver torneo activo + clima\n"
+           "`/settorneo Indian Wells` — cambiar torneo\n"
+           "`/torneos` — lista completa\n\n"
+           "*Modelo:*\n"
            "`/setkey KEY` — nueva API key\n"
-           "`/surface Hard` — superficie\n"
            "`/nev 15` — gap NEV\n"
-           "`/config` — ver config\n"
+           "`/config` — ver config\n\n"
+           "*ROI:*\n"
            "`/gano Tseng` — pick ganado\n"
            "`/perdio Tseng` — pick perdido\n"
            "`/roi` — historial y ROI\n"
-           "`/limpiar` — borrar historial\n\n"
-           "Superficie: *" + cfg["surface"] + "* | NEV: *" + str(cfg["nev_gap"]) + "*" + txt_pend)
+           "`/limpiar` — borrar historial\n"
+           + txt_pend)
     await update.message.reply_text(msg, parse_mode="Markdown")
 
-async def cmd_setkey(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def cmd_torneo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    cfg = load_config()
+    torneo_key = cfg.get("torneo_activo", "")
+    torneo     = TOURNAMENTS_DB.get(torneo_key)
+    if not torneo:
+        await update.message.reply_text(
+            "No hay torneo activo.\nUsa `/settorneo Indian Wells` para activar uno.",
+            parse_mode="Markdown"
+        )
+        return
+    weather = get_weather(torneo["ciudad"])
+    msg  = "*TORNEO ACTIVO*\n\n"
+    msg += torneo["nombre"] + "\n"
+    msg += "Superficie: *" + torneo["superficie"] + "* | CPI: " + str(torneo["cpi"]) + "\n"
+    msg += "Timezone: UTC" + ("+" if torneo["timezone"] >= 0 else "") + str(torneo["timezone"]) + "\n"
+    msg += "Notas: " + torneo["notas"] + "\n"
+    if weather:
+        msg += "\n*Clima actual:*\n"
+        msg += str(weather["temp"]) + "C | Viento: " + str(weather["viento"]) + "km/h | Humedad: " + str(weather["humedad"]) + "%\n"
+        msg += weather["desc"] + "\n"
+    else:
+        msg += "\nClima no disponible ahora mismo.\n"
+    await update.message.reply_text(msg, parse_mode="Markdown")
+
+async def cmd_settorneo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("Uso: `/settorneo Indian Wells`\nUsa /torneos para ver la lista.", parse_mode="Markdown")
+        return
+    nombre = " ".join(context.args).lower()
+    # Busqueda flexible
+    match = None
+    for k in TOURNAMENTS_DB:
+        if nombre in k or k in nombre:
+            match = k
+            break
+    if not match:
+        await update.message.reply_text(
+            "Torneo no encontrado. Usa /torneos para ver la lista completa.",
+            parse_mode="Markdown"
+        )
+        return
+    torneo = TOURNAMENTS_DB[match]
+    cfg = load_config()
+    cfg["torneo_activo"] = match
+    cfg["surface"]       = torneo["superficie"]
+    save_config(cfg)
+    # Limpiar cache de standings para forzar recalculo
+    rpath = os.path.join(CACHE_DIR, "atp_standings.json")
+    if os.path.exists(rpath):
+        os.remove(rpath)
+    weather = get_weather(torneo["ciudad"])
+    clima_txt = ""
+    if weather:
+        clima_txt = "\nClima ahora: " + str(weather["temp"]) + "C | " + str(weather["viento"]) + "km/h viento | " + str(weather["humedad"]) + "% humedad"
+    await update.message.reply_text(
+        "Torneo activo: *" + torneo["nombre"] + "*\n"
+        "Superficie cambiada a: *" + torneo["superficie"] + "*\n"
+        + torneo["notas"] + clima_txt,
+        parse_mode="Markdown"
+    )
+
+async def cmd_torneos(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = "*TORNEOS DISPONIBLES:*\n\n"
+    for k, v in TOURNAMENTS_DB.items():
+        msg += "  `" + k + "` — " + v["nombre"] + " (" + v["superficie"] + ")\n"
+    msg += "\nUsa `/settorneo nombre` para activar."
+    await update.message.reply_text(msg, parse_mode="Markdown")
+
+
     if not context.args:
         await update.message.reply_text("Uso: `/setkey TU_API_KEY`", parse_mode="Markdown")
         return
@@ -823,9 +1234,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not ranking_data:
         await update.message.reply_text("Error con API-Tennis. Comprueba la key con /config")
         return
+
+    # Clima del torneo activo
+    condiciones = None
+    torneo_key  = cfg.get("torneo_activo", "")
+    torneo_info = TOURNAMENTS_DB.get(torneo_key)
+    if torneo_info:
+        weather     = get_weather(torneo_info["ciudad"])
+        condiciones = evaluar_condiciones(weather, torneo_info)
     results = []
     for pa, pb, oa, ob, hora in partidos:
-        r = analizar_partido(pa, pb, oa, ob, ranking_data, cfg, hora)
+        r = analizar_partido(pa, pb, oa, ob, ranking_data, cfg, hora, condiciones)
         results.append(r)
     for r in results:
         msg = formatear_partido(r, cfg)
@@ -841,18 +1260,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # MAIN
 # ============================================================
 def main():
-    print("Tennis Model Bot v2.0 arrancando...")
+    print("Tennis Model Bot v3.0 arrancando...")
     print("Token: ..." + BOT_TOKEN[-10:])
+    load_profiles()
     app = Application.builder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start",   cmd_start))
-    app.add_handler(CommandHandler("setkey",  cmd_setkey))
-    app.add_handler(CommandHandler("surface", cmd_surface))
-    app.add_handler(CommandHandler("nev",     cmd_nev))
-    app.add_handler(CommandHandler("config",  cmd_config))
-    app.add_handler(CommandHandler("gano",    cmd_gano))
-    app.add_handler(CommandHandler("perdio",  cmd_perdio))
-    app.add_handler(CommandHandler("roi",     cmd_roi))
-    app.add_handler(CommandHandler("limpiar", cmd_limpiar))
+    app.add_handler(CommandHandler("start",      cmd_start))
+    app.add_handler(CommandHandler("torneo",     cmd_torneo))
+    app.add_handler(CommandHandler("settorneo",  cmd_settorneo))
+    app.add_handler(CommandHandler("torneos",    cmd_torneos))
+    app.add_handler(CommandHandler("setkey",     cmd_setkey))
+    app.add_handler(CommandHandler("surface",    cmd_surface))
+    app.add_handler(CommandHandler("nev",        cmd_nev))
+    app.add_handler(CommandHandler("config",     cmd_config))
+    app.add_handler(CommandHandler("gano",       cmd_gano))
+    app.add_handler(CommandHandler("perdio",     cmd_perdio))
+    app.add_handler(CommandHandler("roi",        cmd_roi))
+    app.add_handler(CommandHandler("limpiar",    cmd_limpiar))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     print("Bot activo.")
     app.run_polling()
