@@ -437,27 +437,37 @@ def analizar_partido(pa_nombre, pb_nombre, oa, ob, ranking_data, cfg, hora=None)
 
     hora_info = analizar_hora(hora)
 
-    score = 0
-    lines = []
+    score     = 0
+    penalizacion = 0
+    lines     = []
+    vetos     = []  # vetos duros que fuerzan PASS independientemente del score
 
+    # ── 1. VALUE (base) ─────────────────────────────────────────
     if val >= cfg["min_value_pct"]:
         score += 1
         lines.append("VALUE     +" + str(round(val, 1)) + "% sobre la casa")
     else:
         lines.append("VALUE     +" + str(round(val, 1)) + "% insuficiente")
 
+    # ── 2. ELO CONSENSO ─────────────────────────────────────────
+    # Solo puntua completo si general Y superficie apuntan al mismo lado
+    # Si superficie contradice con datos suficientes -> veto duro
     if elo_gen_ok and elo_sur_ok:
         score += 1
         lines.append("ELO       General + " + cfg["surface"] + " confirman")
     elif elo_gen_ok and n_surf < cfg["min_surface_matches"]:
         score += 0.5
         lines.append("ELO       General confirma, pocos datos " + cfg["surface"])
-    elif elo_gen_ok:
-        score += 0.5
-        lines.append("ELO       General si, " + cfg["surface"] + " contradice")
+    elif elo_gen_ok and not elo_sur_ok and n_surf >= cfg["min_surface_matches"]:
+        # ELO superficie contradice con datos suficientes — veto
+        vetos.append("ELO " + cfg["surface"] + " contradice con " + str(n_surf) + " partidos de datos")
+        lines.append("ELO       VETO — " + cfg["surface"] + " contradice el pick (" + str(dpick["elo_surface"]) + " pts)")
     else:
-        lines.append("ELO       Contradice el pick")
+        # ELO general tambien contradice
+        vetos.append("ELO general contradice el pick")
+        lines.append("ELO       VETO — ELO general contradice")
 
+    # ── 3. DATOS FIABLES ────────────────────────────────────────
     if dpick["matches_year"] >= 5:
         score += 1
         lines.append("DATOS     " + str(dpick["matches_year"]) + " partidos en " + str(datetime.now().year))
@@ -465,8 +475,9 @@ def analizar_partido(pa_nombre, pb_nombre, oa, ob, ranking_data, cfg, hora=None)
         score += 0.5
         lines.append("DATOS     " + str(dpick["matches_year"]) + " partidos — limitado")
     else:
-        lines.append("DATOS     " + str(dpick["matches_year"]) + " partidos en " + str(datetime.now().year))
+        lines.append("DATOS     " + str(dpick["matches_year"]) + " partidos — insuficiente")
 
+    # ── 4. DESGASTE ─────────────────────────────────────────────
     if dpick["recent_21d"] <= cfg["fatigue_threshold"] and not dpick["last_3sets"]:
         score += 1
         lines.append("DESGASTE  " + str(dpick["recent_21d"]) + " partidos/21d, ultimo en 2 sets")
@@ -476,6 +487,7 @@ def analizar_partido(pa_nombre, pb_nombre, oa, ob, ranking_data, cfg, hora=None)
     else:
         lines.append("DESGASTE  " + str(dpick["recent_21d"]) + " partidos/21d — cargado")
 
+    # ── 5. RITMO ────────────────────────────────────────────────
     if dpick["days_since"] <= cfg["cold_threshold"]:
         score += 1
         lines.append("RITMO     Jugo hace " + str(dpick["days_since"]) + " dias")
@@ -485,35 +497,62 @@ def analizar_partido(pa_nombre, pb_nombre, oa, ob, ranking_data, cfg, hora=None)
     else:
         lines.append("RITMO     " + str(dpick["days_since"]) + " dias sin jugar — frio")
 
+    # ── RACHA 3W — penalizacion real si mala racha ──────────────
     if dpick["total_3w"] >= 3:
         if dpick["form_3w"] >= 0.67:
-            lines.append("RACHA 3W  " + str(dpick["wins_3w"]) + "/" + str(dpick["total_3w"]) + " victorias ultimas 3 semanas")
+            score += 0.5  # bonus por buena racha
+            lines.append("RACHA 3W  " + str(dpick["wins_3w"]) + "/" + str(dpick["total_3w"]) + " victorias — buena racha")
         elif dpick["form_3w"] <= 0.33:
-            lines.append("RACHA 3W  " + str(dpick["wins_3w"]) + "/" + str(dpick["total_3w"]) + " victorias — mala racha")
+            penalizacion += 1.0  # penalizacion dura por mala racha
+            lines.append("RACHA 3W  " + str(dpick["wins_3w"]) + "/" + str(dpick["total_3w"]) + " victorias — MALA RACHA (-1 score)")
         else:
-            lines.append("RACHA 3W  " + str(dpick["wins_3w"]) + "/" + str(dpick["total_3w"]) + " victorias ultimas 3 semanas")
+            lines.append("RACHA 3W  " + str(dpick["wins_3w"]) + "/" + str(dpick["total_3w"]) + " victorias — neutro")
+    elif dpick["form_last5"] >= 0.6:
+        score += 0.5
+        lines.append("FORMA 5   " + str(int(dpick["form_last5"] * 5)) + "/5 victorias ultimos 5")
+    elif dpick["form_last5"] <= 0.2 and dpick["total_matches"] >= 5:
+        penalizacion += 0.5
+        lines.append("FORMA 5   " + str(int(dpick["form_last5"] * 5)) + "/5 victorias — mala forma (-0.5)")
 
+    # ── ELO superficie informativo ───────────────────────────────
     if n_surf >= cfg["min_surface_matches"]:
         lines.append("ELO " + cfg["surface"] + "  " + str(dpick["elo_surface"]) + " pts (" + str(n_surf) + " partidos)")
 
-    if dpick["ret_ratio"] > 0.10:
-        lines.append("LESION    ALERTA " + str(round(dpick["ret_ratio"] * 100)) + "% retiradas historicas")
+    # ── Retiradas historicas — veto si alto ──────────────────────
+    if dpick["ret_ratio"] > 0.15:
+        vetos.append("Historial de retiradas alto (" + str(round(dpick["ret_ratio"] * 100)) + "%)")
+        lines.append("LESION    VETO — " + str(round(dpick["ret_ratio"] * 100)) + "% retiradas historicas")
+    elif dpick["ret_ratio"] > 0.10:
+        penalizacion += 0.5
+        lines.append("LESION    ALERTA " + str(round(dpick["ret_ratio"] * 100)) + "% retiradas (-0.5)")
 
+    # ── Pinnacle ─────────────────────────────────────────────────
     if pin_diff is not None and pin_odd is not None:
-        if pin_diff > 0:
-            lines.append("PINNACLE  Winamax " + ("+" if pin_diff > 0 else "") + str(pin_diff) + "% vs Pinnacle (" + str(pin_odd) + ") — VALUE CONFIRMADO")
-        elif pin_diff < -3:
-            lines.append("PINNACLE  Winamax " + str(pin_diff) + "% vs Pinnacle (" + str(pin_odd) + ") — mercado en contra")
+        if pin_diff > 2:
+            score += 0.5  # bonus CLV confirmado
+            lines.append("PINNACLE  Winamax +" + str(pin_diff) + "% vs Pinnacle (" + str(pin_odd) + ") — CLV CONFIRMADO (+0.5)")
+        elif pin_diff < -5:
+            vetos.append("Pinnacle da cuota mayor que Winamax — mercado en contra")
+            lines.append("PINNACLE  VETO — Pinnacle (" + str(pin_odd) + ") mejor que Winamax — sin CLV")
+        elif pin_diff < -2:
+            penalizacion += 0.5
+            lines.append("PINNACLE  Winamax " + str(pin_diff) + "% vs Pinnacle (" + str(pin_odd) + ") — mercado en contra (-0.5)")
         else:
             lines.append("PINNACLE  Cuota similar a Pinnacle (" + str(pin_odd) + ")")
 
+    # ── Hora/sesion ──────────────────────────────────────────────
     if hora_info:
         lines.append("SESION    " + hora_info["sesion"] + " — " + hora_info["desc"])
 
-    score = round(score, 1)
+    # ── Score final con penalizaciones ──────────────────────────
+    score = round(max(score - penalizacion, 0), 1)
 
+    # ── Decision ────────────────────────────────────────────────
     if val < cfg["min_value_pct"]:
         decision, motivo = "PASS", "Sin value suficiente"
+    elif vetos:
+        decision = "PASS"
+        motivo   = "VETO — " + vetos[0]
     elif score >= cfg["score_enter"]:
         decision, motivo = "ENTRA", "Score " + str(score) + "/5"
     elif score >= cfg["score_marginal"]:
